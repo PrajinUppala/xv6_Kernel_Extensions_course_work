@@ -3,7 +3,7 @@
 #include "user/user.h"
 
 #define PGSIZE 4096
-#define NPAGES 500
+#define NPAGES 600
 
 struct vmstats before, after;
 

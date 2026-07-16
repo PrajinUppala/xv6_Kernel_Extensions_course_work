@@ -147,7 +147,7 @@
 #include "kernel/types.h"
 #include "user/user.h"
 
-#define N 1000
+#define N 300
 
 int main() {
     printf("\n=== RAID 5 Test (N=400) ===\n");

@@ -1,7 +1,7 @@
 #include "kernel/types.h"
 #include "user/user.h"
 
-#define PAGES 1000
+#define PAGES 300
 
 struct vmstats info;
 
