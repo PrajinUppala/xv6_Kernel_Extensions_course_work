@@ -6,7 +6,7 @@
 #include "proc.h"
 #include "syscall.h"
 #include "defs.h"
-
+#define MAXSYSCALLS 40
 // Fetch the uint64 at addr from the current process.
 int
 fetchaddr(uint64 addr, uint64 *ip)
@@ -101,6 +101,18 @@ extern uint64 sys_unlink(void);
 extern uint64 sys_link(void);
 extern uint64 sys_mkdir(void);
 extern uint64 sys_close(void);
+extern uint64 sys_hello(void);
+extern uint64 sys_getpid2(void);
+extern uint64 sys_getppid(void);
+extern uint64 sys_getnumchild(void);
+extern uint64 sys_getsyscount(void);
+extern uint64 sys_getchdsyscnt(void);
+extern uint64 sys_getlevel(void);
+extern uint64 sys_getmlfqinfo(void);
+extern uint64 sys_getvmstats(void);
+extern uint64 sys_setraidmode(void);
+extern uint64 sys_setdisksched(void);
+extern uint64 sys_getdiskstats(void);
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
@@ -126,6 +138,18 @@ static uint64 (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
+[SYS_hello]   sys_hello,
+[SYS_getpid2] sys_getpid2,
+[SYS_getppid] sys_getppid,
+[SYS_getnumchild] sys_getnumchild,
+[SYS_getsyscount] sys_getsyscount,
+[SYS_getchdsyscnt] sys_getchdsyscnt,
+[SYS_getlevel] sys_getlevel,
+[SYS_getmlfqinfo] sys_getmlfqinfo,
+[SYS_getvmstats] sys_getvmstats,
+[SYS_setraidmode] sys_setraidmode,
+[SYS_setdisksched] sys_setdisksched,
+[SYS_getdiskstats] sys_getdiskstats,
 };
 
 void
@@ -135,6 +159,7 @@ syscall(void)
   struct proc *p = myproc();
 
   num = p->trapframe->a7;
+  p->syscount++;
   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
     // Use num to lookup the system call function for num, call it,
     // and store its return value in p->trapframe->a0

@@ -81,6 +81,21 @@ struct trapframe {
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+struct vmstats {
+  int page_faults;
+  int pages_evicted;
+  int pages_swapped_in;
+  int pages_swapped_out;
+  int resident_pages;
+};
+#define MAX_PAGES 1024
+// struct disk_stats{
+//   int reads;
+//   int writes;
+//   int avg_latency;
+//   int total_latency;
+//   int total_requests;
+// };
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -104,4 +119,21 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  int syscount;               // Number of syscalls made  
+  int level;             // MLFQ level
+  int ticks_curr;            // ticks consumed at current level
+  int queue_ticks[4];     // ticks consumed at each level
+  int times_scheduled;    // number of times this process has been scheduled
+  int syscall_prev;     // syscount value at last scheduling, for delta(S)
+  int page_faults;      // number of page faults for this process
+  int pages_evicted;     // number of pages evicted for this process
+  int pages_swapped_in;   // number of pages swapped in for this process
+  int pages_swapped_out;  // number of pages swapped out for this process
+  int resident_pages;    // number of resident pages for this process
+  int swap_index[MAX_PAGES];
+  int disk_reads;
+  int disk_writes;
+  int avg_disk_latency;
+  int total_disk_latency;
+  int swap_flags[MAX_PAGES];
 };

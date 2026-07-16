@@ -145,6 +145,32 @@ UPROGS=\
 	$U/_logstress\
 	$U/_forphan\
 	$U/_dorphan\
+	$U/_PA1_1\
+	$U/_PA1_2\
+	$U/_PA1_3\
+	$U/_PA1_4\
+	$U/_cpu_bound_test\
+	$U/_sys_heavy_test\
+	$U/_mixed_test\
+	$U/_boost_test\
+	$U/_PA2_1\
+	$U/_PA2_2\
+	$U/_PA2_3\
+	$U/_test_1\
+	$U/_test_2\
+	$U/_test_3\
+	$U/_test_4\
+	$U/_test_5\
+	$U/_PA3_1\
+	$U/_PA3_2\
+	$U/_PA3_3\
+	$U/_PA3_4\
+	$U/_test4_2\
+	$U/_PA4_1\
+	$U/_PA4_2\
+	$U/_PA4_3\
+	$U/_PA4_4\
+	$U/_PA4_5\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

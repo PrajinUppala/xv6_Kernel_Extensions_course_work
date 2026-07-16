@@ -28,7 +28,8 @@ trapinithart(void)
 {
   w_stvec((uint64)kernelvec);
 }
-
+extern int quantum[4];
+extern struct proc proc[NPROC];
 //
 // handle an interrupt, exception, or system call from user space.
 // called from, and returns to, trampoline.S
@@ -68,9 +69,15 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else if((r_scause() == 15 || r_scause() == 13) &&
-            vmfault(p->pagetable, r_stval(), (r_scause() == 13)? 1 : 0) != 0) {
-    // page fault on lazily-allocated page
+  } else if((r_scause() == 15 || r_scause() == 13)){
+    uint64 va = r_stval();
+    va = PGROUNDDOWN(va);
+    // if(va >= PGSIZE * 10 && va < (p->sz - PGSIZE * 2)){
+        p->page_faults++;
+    // }
+    if(vmfault(p->pagetable, va, 1) == 0){
+        setkilled(p);
+    }
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
     printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
@@ -81,8 +88,29 @@ usertrap(void)
     kexit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
-    yield();
+  if(which_dev == 2){
+    struct proc *p = myproc();
+    if(p != 0 && p->state == RUNNING){
+      p->ticks_curr++;
+      p->queue_ticks[p->level]++;
+      int need_preempt = 0;
+      if(p->ticks_curr >= quantum[p->level])
+          need_preempt = 1;
+
+      struct proc *pp;
+      for(pp = proc; pp < &proc[NPROC]; pp++){
+          acquire(&pp->lock);
+          if(pp->state == RUNNABLE && pp->level < p->level){
+              need_preempt = 1;
+              release(&pp->lock);
+              break;
+          }
+          release(&pp->lock);
+      }
+      if(need_preempt)
+          yield();
+    }
+  }
 
   prepare_return();
 
@@ -152,9 +180,27 @@ kerneltrap()
   }
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2 && myproc() != 0)
-    yield();
-
+  struct proc *p = myproc();
+  if(which_dev == 2 && p != 0){
+    if(p != 0 && p->state == RUNNING){
+      p->ticks_curr++;
+      p->queue_ticks[p->level]++;
+      int need_preempt = 0;
+      if(p->ticks_curr >= quantum[p->level])
+          need_preempt = 1;
+    
+      struct proc *pp;
+      for(pp = proc; pp < &proc[NPROC]; pp++){
+          if(pp->state == RUNNABLE && pp->level < p->level){
+              need_preempt = 1;
+              release(&pp->lock);
+              break;
+          }
+      }
+      if(need_preempt)
+          yield();
+    }
+  }
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.
   w_sepc(sepc);

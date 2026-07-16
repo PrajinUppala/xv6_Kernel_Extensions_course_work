@@ -7,6 +7,114 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "fs.h"
+#include "sleeplock.h"
+#include "buf.h"
+
+#define MAX_FRAMES 512
+
+struct frame {
+  int used;
+  struct proc *p;
+  uint64 va;
+  int ref;
+};
+struct frame frame_table[MAX_FRAMES];
+struct spinlock frame_lock;
+int swap_bitmap[MAX_SWAP];
+struct spinlock swap_lock;
+int clock_hand = 0;
+
+void init_frame_table() {
+  initlock(&frame_lock, "frame");
+
+  for(int i = 0; i < MAX_FRAMES; i++){
+    frame_table[i].used = 0;
+    frame_table[i].p = 0;
+    frame_table[i].va = 0;
+    frame_table[i].ref = 0;
+  }
+
+  clock_hand = 0;
+}
+// int swap_out(char *pa) {
+//   acquire(&swap_lock);
+//   for(int i = 0; i < MAX_SWAP; i++) {
+//     if(swap_used[i] == 0) {
+//       swap_used[i] = 1;
+//       memmove(swap_space[i], pa, PGSIZE);
+//       release(&swap_lock);
+//       return i;
+//     }
+//   }
+//   release(&swap_lock);
+//   panic("Swap space full!"); 
+//   return -1; 
+// }
+
+// void swap_in(int index, char *pa) {
+//   if(index < 0 || index >= MAX_SWAP) panic("swap_in: invalid index");
+//   acquire(&swap_lock);
+//   memmove(pa, swap_space[index], PGSIZE);
+//   swap_used[index] = 0;  i < SWAP_BLOC
+//   release(&swap_lock);
+// }
+
+// void swap_free(int index) {
+//   if(index < 0 || index >= MAX_SWAP) panic("swap_free: invalid index");
+//   acquire(&swap_lock);
+//   swap_used[index] = 0;
+//   release(&swap_lock);
+// }
+
+void mark_frame_accessed(struct proc *p, uint64 va) {
+  acquire(&frame_lock);
+
+  for(int i = 0; i < MAX_FRAMES; i++){
+    if(frame_table[i].used &&
+       frame_table[i].p == p &&
+       frame_table[i].va == va){
+      frame_table[i].ref = 1;
+      break;
+    }
+  }
+  
+  release(&frame_lock);
+}
+
+void swapspace_init() {
+  initlock(&swap_lock, "swap");
+  for(int i = 0; i < MAX_SWAP; i++){
+    swap_bitmap[i]=0;
+  }
+}
+
+void
+vm_freeproc(struct proc *p)
+{
+  // free frames
+  acquire(&frame_lock);
+  for(int i = 0; i < MAX_FRAMES; i++){
+    if(frame_table[i].used && frame_table[i].p == p){
+      frame_table[i].used = 0;
+      frame_table[i].p = 0;
+      frame_table[i].va = 0;
+      frame_table[i].ref = 0;
+    }
+  }
+  release(&frame_lock);
+
+  // free swap
+  acquire(&swap_lock);
+  for(int i = 0; i < MAX_PAGES; i++){
+    if(p->swap_index[i] != -1){
+      for(int j = 0; j < BLOCKS_PER_PAGE; j++){
+        swap_bitmap[p->swap_index[i]+j] = 0;
+      }
+      p->swap_index[i] = -1;
+    }
+  }
+  release(&swap_lock);
+}
 
 /*
  * the kernel's page table.
@@ -65,6 +173,8 @@ kvmmap(pagetable_t kpgtbl, uint64 va, uint64 pa, uint64 sz, int perm)
 void
 kvminit(void)
 {
+  init_frame_table();
+  swapspace_init();
   kernel_pagetable = kvmmake();
 }
 
@@ -204,9 +314,14 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     if((*pte & PTE_V) == 0)  // has physical page been allocated?
       continue;
     if(do_free){
+      if(*pte & (PTE_V)) {
       uint64 pa = PTE2PA(*pte);
       kfree((void*)pa);
-    }
+      struct proc *p = myproc();
+      if(p&&p->resident_pages > 0){
+        p->resident_pages--;
+      }
+    }}
     *pte = 0;
   }
 }
@@ -347,6 +462,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    mark_frame_accessed(myproc(), va0);
     if(va0 >= MAXVA)
       return -1;
   
@@ -385,6 +501,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
+    mark_frame_accessed(myproc(), va0);
     if(pa0 == 0) {
       if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
         return -1;
@@ -452,23 +569,161 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 uint64
 vmfault(pagetable_t pagetable, uint64 va, int read)
 {
+  // printf("a\n");
   uint64 mem;
   struct proc *p = myproc();
+  //printf("[VMFAULT] pid=%d va=%p\n", p->pid, (void *)va);
 
-  if (va >= p->sz)
-    return 0;
-  va = PGROUNDDOWN(va);
-  if(ismapped(pagetable, va)) {
+  if(va>=p->sz){
+    //printf("FAIL sz check va=%p sz=%p\n", (void *)va, (void *)p->sz);
     return 0;
   }
-  mem = (uint64) kalloc();
-  if(mem == 0)
-    return 0;
-  memset((void *) mem, 0, PGSIZE);
-  if (mappages(p->pagetable, va, PGSIZE, mem, PTE_W|PTE_U|PTE_R) != 0) {
-    kfree((void *)mem);
+  va=PGROUNDDOWN(va);
+  if(ismapped(pagetable, va)){
+    //printf("a");
+    mark_frame_accessed(p, va);
+    return walkaddr(pagetable, va);
+  }
+  int vpn=va/PGSIZE;
+  int was_swapped=(p->swap_index[vpn]!=-1);
+  // printf("[VMFAULT] vpn=%d swapped=%d idx=%d\n",
+  //      vpn, was_swapped, p->swap_index[vpn]);
+  while(1){
+    int has_free = 0;
+
+    acquire(&frame_lock);
+    for(int i = 0; i < MAX_FRAMES; i++){
+      if(!frame_table[i].used){
+        has_free = 1;
+        break;
+      }
+    }
+
+    release(&frame_lock);
+
+    if(has_free){
+      break;
+    }
+
+    uint64 r = evict_page();
+
+    if(r == 0){
+      continue;
+    }
+    if(r == -1){
+      printf("No free frames and swap space full! Cannot evict page.\n");
+      return 0;
+    }
+  }
+
+  mem = (uint64)kalloc();
+  while(mem == 0){
+    uint64 r = evict_page();
+// printf("[VMFAULT-DEBUG] evict returned r=%p\n", (void*)r);
+    if(r == 0){
+      continue;
+    }
+    if(r == -1){
+      printf("No free frames and swap space full! Cannot evict page.\n");
+      return 0;
+    }
+    mem = (uint64)kalloc();
+  }
+  if(!was_swapped){
+    memset((void*)mem, 0, PGSIZE);
+  }
+  else{
+    int idx;
+
+    acquire(&swap_lock);
+    idx = p->swap_index[vpn];
+    release(&swap_lock);
+
+    if(idx < 0){
+      panic("vmfault: invalid swap index");
+    }
+    //printf("[SWAP-IN] pid=%d vpn=%d idx=%d\n", p->pid, vpn, idx);
+    for(int i = 0; i < BLOCKS_PER_PAGE; i++){
+      struct buf *b = bread(ROOTDEV, SWAP_START + idx + i);
+      //struct proc *p = myproc();
+      // if(p) p->disk_reads++;
+      memmove((void*)(mem + i*BSIZE), b->data, BSIZE);
+      brelse(b);
+    }
+    acquire(&swap_lock);
+    for(int i = 0; i < BLOCKS_PER_PAGE; i++){
+      swap_bitmap[idx+i] = 0;
+    }
+    p->swap_index[vpn] = -1;
+    release(&swap_lock);
+    p->pages_swapped_in++;
+  }
+  int slot = -1;
+  acquire(&frame_lock);
+
+  for(int i = 0; i < MAX_FRAMES; i++){
+    if(!frame_table[i].used){
+      frame_table[i].used = 1;
+      frame_table[i].p = p;
+      frame_table[i].va = va;
+      frame_table[i].ref = 1;
+      slot = i;
+      break;
+    }
+  }
+
+  release(&frame_lock);
+
+  if(slot == -1){
+    //printf("FAIL no slot\n");
+    kfree((void*)mem);
     return 0;
   }
+  int flags;
+  if(was_swapped){
+    flags = p->swap_flags[vpn];
+  }
+  else{
+    flags = PTE_R | PTE_W | PTE_U;
+  }
+
+  pte_t *pte_check = walk(pagetable, va, 0);
+if(pte_check && (*pte_check & PTE_V)){
+  acquire(&frame_lock);
+  frame_table[slot].used = 0;
+  frame_table[slot].p = 0;
+  frame_table[slot].va = 0;
+  frame_table[slot].ref = 0;
+  release(&frame_lock);
+
+  kfree((void*)mem);
+  return PTE2PA(*pte_check);
+}
+
+  //printf("RESTORE flags=%d vpn=%d\n", flags, vpn);
+  if(mappages(pagetable, va, PGSIZE, mem, flags) != 0){
+
+    acquire(&frame_lock);
+
+    frame_table[slot].used = 0;
+    frame_table[slot].p = 0;
+    frame_table[slot].va = 0;
+    frame_table[slot].ref = 0;
+
+    release(&frame_lock);
+
+    kfree((void*)mem);
+    return 0;
+  }
+
+  // pte_t *pte = walk(pagetable, va, 0);
+    // printf("RESTORE flags=%p vpn=%d\n",
+    //    (void*)(uint64)flags,
+    //    vpn);
+
+  p->resident_pages++;
+  //printf("[ALLOC] pid=%d va=%p\n", p->pid, (void *)va);
+
   return mem;
 }
 
@@ -479,8 +734,163 @@ ismapped(pagetable_t pagetable, uint64 va)
   if (pte == 0) {
     return 0;
   }
-  if (*pte & PTE_V){
+  if ((*pte & PTE_V)&&(*pte & (PTE_R|PTE_W|PTE_X))) {
     return 1;
   }
   return 0;
+}
+
+uint64
+evict_page()
+{
+  while(1){
+  acquire(&frame_lock);
+
+  int best_idx = -1;
+  int max_q = -1;
+
+  for(int i = 0; i < MAX_FRAMES; i++){
+    int idx = (clock_hand+i)%MAX_FRAMES;
+    struct frame *frame_1 = &frame_table[idx];
+
+    if(!frame_1->used){
+      continue;
+    }
+
+    if(frame_1->ref == 1){
+      frame_1->ref = 0;
+    }
+    else{
+      if(frame_1->p && (best_idx == -1||frame_1->p->level > max_q)){
+        best_idx = idx;
+
+        max_q = frame_1->p->level;
+      }
+    }
+  }
+  
+  if(best_idx == -1){
+    for(int i = 0; i < MAX_FRAMES; i++){
+      int idx = (clock_hand + i) % MAX_FRAMES;
+      struct frame *frame_1 = &frame_table[idx];
+
+
+      if(frame_1->used && frame_1->ref == 0 && frame_1->p){
+        if(best_idx == -1 || frame_1->p->level > max_q){
+          best_idx = idx;
+
+          max_q = frame_1->p->level;
+
+        }
+      }
+    }
+  }
+
+  if(best_idx == -1){
+    // release(&frame_lock);
+    for(int i = 0; i < MAX_FRAMES; i++){
+      if(frame_table[i].used){
+        best_idx=i;
+        break;
+      }
+    }
+    // return 0;
+  }
+
+  struct frame *victim = &frame_table[best_idx];
+  struct proc *vp = victim->p;
+  uint64 va = victim->va;
+// printf("[EVICT] pid=%d va=%p vpn=%d\n",
+//        vp->pid, (void *)va, (int)(va/PGSIZE));
+  pte_t *pte = walk(vp->pagetable, va, 0);
+  if(pte == 0 || !(*pte & PTE_V)){
+    frame_table[best_idx].used = 0;
+    frame_table[best_idx].p = 0;
+    frame_table[best_idx].va = 0;
+    frame_table[best_idx].ref = 0;
+
+    clock_hand = (best_idx + 1) % MAX_FRAMES;
+
+    release(&frame_lock);
+
+    continue;   
+  }
+
+  uint64 pa = PTE2PA(*pte);
+  int vpn=va/PGSIZE;
+  vp->swap_flags[vpn]=PTE_FLAGS(*pte);
+
+// printf("SAVE FLAGS vpn=%d flags=%p pte=%p\n",
+//        vpn,
+//        (void*)(uint64)vp->swap_flags[vpn],
+//        (void*)*pte);
+  release(&frame_lock);
+  acquire(&swap_lock);
+
+  // printf("[EVICT-DEBUG] swap_idx=%d MAX_SWAP=%d\n", best_idx, MAX_SWAP);
+  int swap_idx = -1;
+  for(int i = 0; i <= MAX_SWAP - BLOCKS_PER_PAGE; i++){
+    int free = 1;
+    for(int j = 0; j < BLOCKS_PER_PAGE; j++){
+      if(swap_bitmap[i + j]!= 0){
+        free = 0;
+        break;
+      }
+    }
+    if(free){
+        for(int j = 0; j < BLOCKS_PER_PAGE; j++){
+            swap_bitmap[i + j] = 1;
+        }
+        swap_idx = i;
+        // printf("[BITMAP-DEBUG] allocated swap_idx=%d for vpn=%d, bitmap[0]=%d bitmap[4]=%d\n",
+        //       swap_idx, (int)(va/PGSIZE), swap_bitmap[0], swap_bitmap[4]);
+        break;
+    }
+  }
+  if(swap_idx == -1){
+    release(&swap_lock);
+    return -1;
+  }
+  if(vpn >= MAX_PAGES){
+    // printf("[EVICT-BUG] vpn=%d >= MAX_PAGES=%d, cannot swap!\n", vpn, MAX_PAGES);
+    release(&swap_lock);
+    release(&frame_lock);
+    return -1;
+  }
+  vp->swap_index[PGROUNDDOWN(va)/PGSIZE]=swap_idx;
+  // printf("[SWAP-OUT] pid=%d vpn=%d idx=%d\n",
+  //      vp->pid, (int)(va/PGSIZE), swap_idx);
+  release(&swap_lock);
+  // int vpn = PGROUNDDOWN(va) / PGSIZE;
+ // printf("[WRITE DISK] idx=%d blocks=%d\n", swap_idx, BLOCKS_PER_PAGE);
+  for(int i = 0; i < BLOCKS_PER_PAGE; i++){
+    struct buf *b = bread(ROOTDEV, SWAP_START + swap_idx + i);
+    memmove(b->data, (void*)(pa + i*BSIZE), BSIZE);
+    bwrite(b);
+    // if(vp) vp->disk_writes++;
+    brelse(b);
+  }
+  acquire(&frame_lock);
+  pte = walk(vp->pagetable, va, 0);
+  if(pte){
+    *pte=0;
+  }
+  sfence_vma();
+  if(vp){
+    vp->pages_evicted++;
+    vp->resident_pages--;
+    vp->pages_swapped_out++;
+  }
+
+  victim->p = 0;
+  victim->ref = 0;
+  victim->used = 0;
+  //printf("[FRAME FREED] idx=%d\n", best_idx);
+  victim->va = 0;
+
+  clock_hand=(best_idx+1)%MAX_FRAMES;
+
+  release(&frame_lock);
+  return pa;
+}
 }

@@ -47,7 +47,7 @@
 
 // this many virtio descriptors.
 // must be a power of two.
-#define NUM 8
+#define NUM 64
 
 // a single descriptor, from the spec.
 struct virtq_desc {
@@ -93,4 +93,13 @@ struct virtio_blk_req {
   uint32 type; // VIRTIO_BLK_T_IN or ..._OUT
   uint32 reserved;
   uint64 sector;
+};
+extern struct disk_stats d_stats;
+
+struct disk_stats{
+  int reads;
+  int writes;
+  int avg_latency;
+  int total_latency;
+  int total_requests;
 };

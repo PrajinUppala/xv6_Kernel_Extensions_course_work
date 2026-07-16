@@ -20,3 +20,15 @@
 #define SYS_link   19
 #define SYS_mkdir  20
 #define SYS_close  21
+#define SYS_hello  22
+#define SYS_getpid2 23
+#define SYS_getppid 24
+#define SYS_getnumchild 25
+#define SYS_getsyscount 26
+#define SYS_getchdsyscnt 27
+#define SYS_getlevel 28
+#define SYS_getmlfqinfo 29
+#define SYS_getvmstats 30
+#define SYS_setraidmode 31
+#define SYS_setdisksched 32
+#define SYS_getdiskstats 33

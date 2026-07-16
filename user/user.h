@@ -1,6 +1,22 @@
 #define SBRK_ERROR ((char *)-1)
-
+#include "mlfq.h"
 struct stat;
+
+struct vmstats
+{
+    int page_faults;
+    int pages_evicted;
+    int pages_swapped_in;
+    int pages_swapped_out;
+    int resident_pages;
+};
+struct disk_stats{
+  int reads;
+  int writes;
+  int avg_latency;
+  int total_latency;
+  int total_requests;
+};
 
 // system calls
 int fork(void);
@@ -24,6 +40,18 @@ int getpid(void);
 char* sys_sbrk(int,int);
 int pause(int);
 int uptime(void);
+int hello(void);
+int getpid2(void);
+int getppid(void);
+int getnumchild(void);
+int getsyscount(void);
+int getchdsyscnt(int pid_child);
+int getlevel(void);
+int getmlfqinfo(int pid, struct mlfqinfo *info);
+int getvmstats(int pid, struct vmstats *st);
+int setraidmode(int mode);
+int setdisksched(int mode);
+int getdiskstats(int pid, struct disk_stats *st);
 
 // ulib.c
 int stat(const char*, struct stat*);

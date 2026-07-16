@@ -59,6 +59,9 @@ void            ireclaim(int);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+void            init_frame_table(void);
+void            swapspace_init(void);
+void            bind_user_frame(uint64, struct proc*, uint64);
 
 // log.c
 void            initlog(int, struct superblock*);
@@ -101,6 +104,7 @@ void            yield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
+extern struct spinlock wait_lock;
 
 // swtch.S
 void            swtch(struct context*, struct context*);
@@ -169,6 +173,9 @@ int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             ismapped(pagetable_t, uint64);
 uint64          vmfault(pagetable_t, uint64, int);
+uint64          evict_page(void);
+void            vm_freeproc(struct proc*);
+int             swap_out(char*);
 
 // plic.c
 void            plicinit(void);
@@ -183,3 +190,4 @@ void            virtio_disk_intr(void);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+extern void set_raid_mode(int mode);

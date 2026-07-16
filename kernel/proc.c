@@ -102,6 +102,9 @@ allocpid()
   return pid;
 }
 
+int quantum[4] = {2, 4, 8, 16}; // Time quanta for each MLFQ level
+static int last_idx[4] = {0,0,0,0};
+
 // Look in the process table for an UNUSED proc.
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
@@ -124,7 +127,25 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
-
+  p->syscount = 0;
+  p->level = 0;
+  p->ticks_curr = 0;
+  for(int i = 0; i < 4; i++) {
+    p->queue_ticks[i] = 0;
+  }
+  p->syscall_prev = 0;
+  p->page_faults = 0;
+  p->pages_evicted = 0;
+  p->pages_swapped_in = 0;
+  p->pages_swapped_out = 0;
+  p->resident_pages = 0;
+  p->disk_reads = 0;
+  p->disk_writes = 0;
+  p->total_disk_latency = 0;
+  for(int i = 0; i < MAX_PAGES; i++){
+    p->swap_index[i]=-1;
+    p->swap_flags[i]=-1;
+  }
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -158,6 +179,7 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  vm_freeproc(p);
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
@@ -426,6 +448,7 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
+  static int boost_counter = 0;
 
   c->proc = 0;
   for(;;){
@@ -437,23 +460,67 @@ scheduler(void)
     intr_on();
     intr_off();
 
-    int found = 0;
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
+    acquire(&tickslock);
+    int do_boost = 0;
+    if(ticks-boost_counter >= 128){
+      do_boost = 1;
+      boost_counter = ticks;
+    }
+    release(&tickslock);
+    
+    if(do_boost){
+      struct proc *pp;
+      for(pp = proc; pp < &proc[NPROC]; pp++){
+        acquire(&pp->lock);
+        if(pp->state == RUNNABLE || pp->state == RUNNING){
+          pp->level = 0;
+          pp->ticks_curr = 0;
+        }
+        release(&pp->lock);
       }
-      release(&p->lock);
+    }
+    int found = 0;
+    for(int level = 0; level < 4; level++) {
+      for(int i = 0; i < NPROC; i++) {
+        int idx = (last_idx[level] + i) % NPROC;
+        p = &proc[idx];
+
+        acquire(&p->lock);
+        if(p->state == RUNNABLE && p->level == level) {
+          // Switch to chosen process.  It is the process's job
+          // to release its lock and then reacquire it
+          // before jumping back to us.
+          found = 1;
+          last_idx[level] = (idx + 1) % NPROC;
+          p->times_scheduled++; // Increment times_scheduled for MLFQ
+          // reset slice accounting start
+          p->state = RUNNING;
+          c->proc = p;
+          swtch(&c->context, &p->context);
+          
+          // Process is done running for now.
+          // It should have changed its p->state before coming back.
+          c->proc = 0;
+          
+          // Demotion logic after time slice
+          int delta_S = p->syscount - p->syscall_prev;
+          int delta_T = p->ticks_curr;
+          
+          if(delta_T >= quantum[p->level]){
+            
+            if(delta_S < delta_T && p->level < 3){
+              p->level++;
+            }
+            p->ticks_curr = 0;
+            p->syscall_prev = p->syscount;
+
+          }
+        }
+        release(&p->lock);
+      }
+      if(found){
+        break;
+      }
     }
     if(found == 0) {
       // nothing to run; stop running on this core until an interrupt.
